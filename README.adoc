@@ -1,0 +1,93 @@
+= MapStruct with Nullaway limitation
+
+This repo shows the limitation in MapStructs code-generation.
+If the code was generated in a different way, throwing when a value is null and not just returning it, not initializing values and later assigning them, not passing null to other generated mapper methods etc., then this code should compile, because we have `@Nullable` annotations on the domain in the same place as in the dto.
+
+== The Problem by example
+
+link:https://mapstruct.org/[MapStruct] cannot be used in combination with link:https://github.com/uber/NullAway[nullaway] because the generated mappers cause nullaway to throw errors and our code never compiles.
+We could ignore generated classes via `<arg>-XepOpt:NullAway:ExcludedClassAnnotations=javax.annotation.processing.Generated</arg>` but then we no longer have null-checks when going from dto to domain and vice versa and that defeats the purpose a bit.
+
+Consider the following generated code that goes from `Renter` to `RenterDto`:
+
+[source,java]
+----
+// our interface
+@Mapper
+public interface RenterTranslator {
+    @Mapping(source = "id", target = "id.rawValue")
+    @Nullable Renter dtoToRenter(RenterDto dto);
+}
+
+// that results in this generated translator
+@Generated()
+public class RenterTranslatorImpl implements RenterTranslator {
+    @Override
+    public Renter dtoToRenter(RenterDto dto) {
+        if ( dto == null ) { // <1>
+            return null; // <2>
+        }
+        // etc.
+    }
+}
+----
+
+<1> Useless check, we know dto is not-null because parameter in interface method is not marked as nullable.
+<2> We can annotate the return type as nullable in the interface, but this annotation is not copied to the generated code which causes an error by nullaway.
+
+We can stop MapStruct from generating the first check via compiler-args or Annotation, but then we get code that runs into other problems:
+
+[source,java]
+----
+// our interface
+@Mapper(nullValueMappingStrategy = NullValueMappingStrategy.RETURN_DEFAULT)
+public interface RenterTranslator {
+    @Mapping(source = "id", target = "id.rawValue")
+    @Nullable Renter dtoToRenter(RenterDto dto);
+}
+
+// that results in this generated translator
+@Generated()
+public class RenterTranslatorImpl implements RenterTranslator {
+    @Override
+    public Renter dtoToRenter(RenterDto dto) {
+        RenterId id = null; // <1>
+        String name = null; // <1>
+        if ( dto != null ) { // <2>
+            id = renterDtoToRenterId( dto );
+            name = dto.name();
+        }
+
+        Renter renter = new Renter( id, name ); // <3>
+
+        if ( dto != null ) {
+        }
+
+        return renter;
+    }
+}
+----
+
+<1> Parameters initialized to null
+<2> Their correct value might not be set
+<3> Nullaway throws an error because parameter might not be set.
+
+== Usage
+
+.Use correct Java SDK via link:https://sdkman.io/[SDKMan]
+[source,bash]
+----
+sdk env use
+----
+
+'''
+
+This fails due the way MapStruct generates code:
+
+.Compile with null-checks
+[source,bash]
+----
+mvn compile
+----
+
+
